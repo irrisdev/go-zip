@@ -2,7 +2,6 @@ package zipper
 
 import (
 	"archive/zip"
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +23,8 @@ func Zip(inPath string) (string, error) {
 		return "", errors.New("invalid path")
 	}
 
+	dstPath = fmt.Sprintf("%s.zip", dstPath)
+
 	// collect all files in the path recursivley
 	files := make([]string, 0)
 	if err := filepath.WalkDir(inPath, func(path string, d fs.DirEntry, err error) error {
@@ -32,18 +33,14 @@ func Zip(inPath string) (string, error) {
 			return err
 		}
 
-		if d.IsDir() {
-			return nil
+		if !d.IsDir() {
+			files = append(files, path)
 		}
-
-		files = append(files, path)
 
 		return nil
 	}); err != nil {
 		return "", err
 	}
-
-	dstPath = fmt.Sprintf("%s.zip", dstPath)
 
 	// create new file
 	zipFile, err := os.Create(dstPath)
@@ -56,43 +53,42 @@ func Zip(inPath string) (string, error) {
 	defer func() {
 		zipFile.Close()
 		if !completed {
-			err := os.Remove(dstPath)
-			if err != nil {
-				panic(err)
-			}
+			os.Remove(dstPath)
 		}
 	}()
 
 	// create new zip writer
-	w := bufio.NewWriterSize(zipFile, 32*1024)
-	r := bufio.NewReaderSize(nil, 64*1024)
+	zipw := zip.NewWriter(zipFile)
 
-	zipw := zip.NewWriter(w)
-	defer zipw.Close()
+	if err := func() error {
+		for _, file := range files {
+			f, err := os.Open(file)
+			if err != nil {
+				return err
+			}
 
-	// loop files in directory
-	for _, file := range files {
-		// open file for reading
-		f, err := os.Open(file)
-		if err != nil {
-			return "", err
+			relPath, err := filepath.Rel(inPath, file)
+			if err != nil {
+				f.Close()
+				return err
+			}
+
+			zw, err := zipw.Create(relPath)
+			if err != nil {
+				f.Close()
+				return err
+			}
+
+			if _, err := io.Copy(zw, f); err != nil {
+				f.Close()
+				return err
+			}
+
+			f.Close()
 		}
-		defer f.Close()
-
-		// create new file in zip
-		w, err := zipw.Create(file)
-		if err != nil {
-			return "", err
-		}
-
-		r.Reset(f)
-
-		// copy contents
-		_, err = io.Copy(w, r)
-		if err != nil {
-			return "", err
-		}
-
+		return zipw.Close()
+	}(); err != nil {
+		return "", err
 	}
 
 	completed = true
